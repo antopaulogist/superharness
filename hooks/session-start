@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# SessionStart hook for Superharness plugin
+# Injects orchestrator context and handles crash recovery
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_DIR="$(pwd)"
+SUPERHARNESS_DIR="${PROJECT_DIR}/.superharness"
+STATE_FILE="${SUPERHARNESS_DIR}/state.json"
+
+# --- JSON escape helper ---
+escape_for_json() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+# --- Read orchestrator skill ---
+orchestrator_content=$(cat "${PLUGIN_ROOT}/skills/orchestrator/SKILL.md" 2>/dev/null || echo "Error: orchestrator SKILL.md not found")
+
+# --- Crash recovery check ---
+recovery_context=""
+if [ -f "$STATE_FILE" ]; then
+    last_clean=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('true' if d.get('lastSessionClean', True) else 'false')" "$STATE_FILE" 2>/dev/null || echo "true")
+    if [ "$last_clean" = "false" ]; then
+        recovery_context="\n\n⚠️ RECOVERY: The previous session did not exit cleanly. Check .superharness/state.json for the last session timestamp. Assess whether any work was lost and capture any uncaptured learnings before proceeding."
+    fi
+fi
+
+# --- Set session state to in-progress ---
+mkdir -p "$SUPERHARNESS_DIR"
+timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+if [ -f "$STATE_FILE" ]; then
+    # Update existing state file — set lastSessionClean to false
+    python3 -c "
+import json, sys
+f = sys.argv[1]
+t = sys.argv[2]
+with open(f) as fh:
+    state = json.load(fh)
+state['lastSessionClean'] = False
+state['lastSessionTimestamp'] = t
+state['sessionCount'] = state.get('sessionCount', 0) + 1
+with open(f, 'w') as fh:
+    json.dump(state, fh, indent=2)
+" "$STATE_FILE" "$timestamp"
+else
+    # Create initial state file
+    cat > "$STATE_FILE" << STATEOF
+{
+  "lastSessionClean": false,
+  "lastSessionTimestamp": "$timestamp",
+  "lastAuditTimestamp": null,
+  "sessionCount": 1,
+  "fileCountAtLastAudit": 0
+}
+STATEOF
+fi
+
+# --- Build context ---
+orchestrator_escaped=$(escape_for_json "$orchestrator_content")
+recovery_escaped=$(escape_for_json "$recovery_context")
+session_context="<SUPERHARNESS>\nYou have a Superharness engineering plugin installed.\n\n${orchestrator_escaped}\n${recovery_escaped}\n</SUPERHARNESS>"
+
+# --- Output JSON ---
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "${session_context}"
+  }
+}
+EOF
+else
+    cat <<EOF
+{
+  "additional_context": "${session_context}"
+}
+EOF
+fi
+
+exit 0

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Stop hook for Superharness plugin
+# Injects completion checklist and captures session state
+
+set -euo pipefail
+
+PROJECT_DIR="$(pwd)"
+SUPERHARNESS_DIR="${PROJECT_DIR}/.superharness"
+STATE_FILE="${SUPERHARNESS_DIR}/state.json"
+PLAN_FILE="${SUPERHARNESS_DIR}/engineering-plan.json"
+
+# --- Build completion checklist context ---
+checklist_context=""
+if [ -f "$PLAN_FILE" ]; then
+    checklist=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    plan = json.load(f)
+items = plan.get('completion_checklist', [])
+for item in items:
+    print(f'- [ ] {item}')
+" "$PLAN_FILE" 2>/dev/null || echo "")
+
+    if [ -n "$checklist" ]; then
+        checklist_context="Before you finish, verify you have completed these items from the engineering plan:\\n${checklist}\\nIf any are incomplete and were required for this session's work, continue working on them."
+    fi
+fi
+
+# --- Update state.json for clean exit ---
+if [ -f "$STATE_FILE" ]; then
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    python3 -c "
+import json, sys
+f = sys.argv[1]
+t = sys.argv[2]
+with open(f) as fh:
+    state = json.load(fh)
+state['lastSessionClean'] = True
+state['lastSessionTimestamp'] = t
+with open(f, 'w') as fh:
+    json.dump(state, fh, indent=2)
+" "$STATE_FILE" "$timestamp" 2>/dev/null
+fi
+
+# --- Build memory capture instruction ---
+memory_context="Assess whether this session produced significant learnings (decisions made, patterns discovered, problems solved). If yes, write them to .superharness/memory/ as markdown files with frontmatter. If nothing significant happened, skip silently."
+
+# --- Output combined context ---
+escape_for_json() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+combined="${checklist_context}\\n\\n${memory_context}"
+escaped_combined=$(escape_for_json "$combined")
+
+cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "Stop",
+    "additionalContext": "${escaped_combined}"
+  }
+}
+EOF
+
+exit 0

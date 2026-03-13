@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Superharness plugin
+# Gates git commits against the engineering plan's pre_commit_checks
+
+set -euo pipefail
+
+PROJECT_DIR="$(pwd)"
+PLAN_FILE="${PROJECT_DIR}/.superharness/engineering-plan.json"
+
+# --- Read hook input from stdin ---
+HOOK_INPUT=$(cat)
+
+# --- Extract tool input command (for Bash tool) ---
+TOOL_COMMAND=$(echo "$HOOK_INPUT" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+tool_input = data.get('tool_input', {})
+# Bash tool input has a 'command' field
+print(tool_input.get('command', ''))
+" 2>/dev/null || echo "")
+
+# --- Check if this is a git commit command ---
+if [[ "$TOOL_COMMAND" != *"git commit"* ]]; then
+    exit 0
+fi
+
+# --- Check if engineering plan exists ---
+if [ ! -f "$PLAN_FILE" ]; then
+    exit 0
+fi
+
+# --- Execute pre_commit_checks from plan ---
+RESULT=$(python3 -c "
+import json, sys, subprocess, os
+
+with open(sys.argv[1]) as f:
+    plan = json.load(f)
+
+checks = plan.get('pre_commit_checks', [])
+failures = []
+project_dir = sys.argv[2]
+
+for check in checks:
+    check_type = check.get('check', '')
+    message = check.get('message', 'Check failed')
+
+    if check_type == 'file_exists':
+        path = check.get('path', '')
+        full_path = os.path.join(project_dir, path)
+        if not os.path.exists(full_path):
+            failures.append(f'❌ {message} (path: {path})')
+
+    elif check_type == 'command_passes':
+        cmd = check.get('command', '')
+        try:
+            subprocess.run(cmd, shell=True, cwd=project_dir,
+                         capture_output=True, timeout=60, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            failures.append(f'❌ {message} (command: {cmd})')
+
+if failures:
+    print('\\n'.join(failures))
+" "$PLAN_FILE" "$PROJECT_DIR" 2>/dev/null || echo "")
+
+# --- Report results ---
+if [ -n "$RESULT" ]; then
+    escaped=$(echo "$RESULT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" | sed 's/^"//;s/"$//')
+    cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "additionalContext": "⚠️ PRE-COMMIT GATE: The following checks from the engineering plan failed. Address these before committing:\\n${escaped}\\nRefer to .superharness/engineering-plan.json for the full engineering plan."
+  }
+}
+EOF
+fi
+
+exit 0

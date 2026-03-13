@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "superharness",
+  "description": "Autonomous engineering lead plugin for Claude Code",
+  "owner": {
+    "name": "Antony Paul"
+  },
+  "plugins": [
+    {
+      "name": "superharness",
+      "description": "Autonomous engineering lead — manages the entire development process so you only describe outcomes",
+      "version": "0.1.0",
+      "author": {
+        "name": "Antony Paul"
+      },
+      "source": "./",
+      "category": "development",
+      "homepage": "https://github.com/antopaulogist/superharness",
+      "license": "MIT"
+    }
+  ]
+}

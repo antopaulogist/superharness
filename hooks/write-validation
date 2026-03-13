@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# PostToolUse hook for Superharness plugin
+# Validates JSON syntax after Write/Edit operations
+
+set -euo pipefail
+
+# --- Read hook input from stdin ---
+HOOK_INPUT=$(cat)
+
+# --- Extract the file path from tool input ---
+FILE_PATH=$(echo "$HOOK_INPUT" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+tool_input = data.get('tool_input', {})
+# Write tool has 'file_path', Edit tool has 'file_path'
+print(tool_input.get('file_path', ''))
+" 2>/dev/null || echo "")
+
+if [ -z "$FILE_PATH" ] || [ ! -f "$FILE_PATH" ]; then
+    exit 0
+fi
+
+# --- Check file extension (JSON only — no PyYAML dependency) ---
+case "$FILE_PATH" in
+    *.json)
+        if ! python3 -m json.tool "$FILE_PATH" > /dev/null 2>&1; then
+            error_msg=$(python3 -m json.tool "$FILE_PATH" 2>&1 | tail -1 || true)
+            escaped_msg=$(echo "$error_msg" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" | sed 's/^"//;s/"$//')
+            cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "⚠️ JSON SYNTAX ERROR in ${FILE_PATH}: ${escaped_msg}. Please fix the JSON syntax."
+  }
+}
+EOF
+        fi
+        ;;
+    *)
+        # No validation for non-JSON file types (no external linter dependencies)
+        ;;
+esac
+
+exit 0
